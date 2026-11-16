@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: prayagraj-open-world
+    runtime: node
+    region: singapore
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: MONGODB_URI
+        sync: false

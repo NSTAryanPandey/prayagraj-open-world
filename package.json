@@ -1,0 +1,14 @@
+{
+  "name": "prayagraj-open-world",
+  "version": "1.0.0",
+  "description": "Open-world multiplayer game on the real map of Prayagraj (OpenStreetMap), built with three.js and Socket.IO",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1",
+    "mongodb": "^6.10.0"
+  },
+  "license": "MIT"
+}
