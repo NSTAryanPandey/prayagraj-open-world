@@ -200,7 +200,7 @@ const ULTRA = QUAL === 2;
 const VIEW = LITE ? 520 : ULTRA ? 1400 : 1100;          // how far the city is drawn (metres)
 const CH = 200;                          // city chunk size (metres)
 const renderer = new THREE.WebGLRenderer({ antialias: !LITE, powerPreference: 'high-performance' });
-renderer.setPixelRatio(LITE ? 0.75 : Math.min(devicePixelRatio, isTouch ? 1.25 : 1.5));
+renderer.setPixelRatio(LITE ? 0.75 : Math.min(devicePixelRatio, isTouch ? 1.25 : (QUAL === 2 ? 1.75 : 1.5)));
 renderer.setSize(innerWidth, innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.95;
@@ -216,11 +216,12 @@ const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.3, VIEW * 2.2);
 const std = (o) => new THREE.MeshStandardMaterial(o);
 const clock = new THREE.Clock();
+const MAXANISO = Math.min(16, renderer.capabilities.getMaxAnisotropy());
 
 // sky, sun, haze
 const sky = new Sky(); sky.scale.setScalar(20000); scene.add(sky);
 const skyU = sky.material.uniforms;
-skyU.turbidity.value = 4; skyU.rayleigh.value = 1.2; skyU.mieCoefficient.value = 0.006; skyU.mieDirectionalG.value = 0.85;
+skyU.turbidity.value = 2.2; skyU.rayleigh.value = 0.9; skyU.mieCoefficient.value = 0.0035; skyU.mieDirectionalG.value = 0.85;
 const sun = new THREE.DirectionalLight(0xfff1dc, 3.0);
 sun.castShadow = !LITE;
 const SH = isTouch ? 2048 : 4096, SR = isTouch ? 90 : 120;
@@ -229,7 +230,7 @@ Object.assign(sun.shadow.camera, { left: -SR, right: SR, top: SR, bottom: -SR, n
 sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.6;
 scene.add(sun, sun.target);
 const hemi = new THREE.HemisphereLight(0xcfe3ff, 0x8a7a62, 1.1); scene.add(hemi);
-scene.fog = new THREE.FogExp2(0xb8c6d4, LITE ? 0.0019 : 0.00075);
+scene.fog = new THREE.FogExp2(0xa9bfd6, LITE ? 0.0013 : 0.00038);
 const pmrem = new THREE.PMREMGenerator(renderer);
 var clouds = null, waterFX = null;
 { // soft cloud layer high above the city
@@ -247,17 +248,17 @@ var clouds = null, waterFX = null;
 let night = 0, nightTarget = 0, envTimer = 0;
 const sunDir = new THREE.Vector3();
 function applySky() {
-  const elev = THREE.MathUtils.lerp(21, -8, night), az = 238;          // warm late-afternoon sun
+  const elev = THREE.MathUtils.lerp(27, -8, night), az = 232;          // warm late-afternoon sun
   sunDir.setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - elev), THREE.MathUtils.degToRad(az));
   skyU.sunPosition.value.copy(sunDir);
   const dayK = THREE.MathUtils.clamp(1 - night * 1.15, 0, 1);
-  sun.intensity = 3.6 * dayK + 0.12; sun.color.setHSL(0.085, 0.75, THREE.MathUtils.lerp(0.86, 0.72, night));
-  if (clouds) { clouds.material.opacity = THREE.MathUtils.lerp(0.85, 0.18, night); clouds.material.color.setHSL(0.08, 0.5, THREE.MathUtils.lerp(0.88, 0.25, night)); }
+  sun.intensity = 4.6 * dayK + 0.12; sun.color.setHSL(0.085, 0.75, THREE.MathUtils.lerp(0.86, 0.72, night));
+  if (clouds) { clouds.material.opacity = THREE.MathUtils.lerp(1.0, 0.18, night); clouds.material.color.setHSL(0.08, 0.5, THREE.MathUtils.lerp(0.88, 0.25, night)); }
   if (waterFX) waterFX.material.uniforms.sunDirection.value.copy(sunDir).normalize();
-  hemi.intensity = THREE.MathUtils.lerp(0.75, 0.14, night);
+  hemi.intensity = THREE.MathUtils.lerp(0.55, 0.12, night);
   hemi.color.setHSL(0.6, 0.5, THREE.MathUtils.lerp(0.85, 0.35, night));
-  scene.fog.color.setRGB(THREE.MathUtils.lerp(0.80, 0.04, night), THREE.MathUtils.lerp(0.74, 0.06, night), THREE.MathUtils.lerp(0.66, 0.12, night));
-  renderer.toneMappingExposure = THREE.MathUtils.lerp(0.82, 0.7, night);
+  scene.fog.color.setRGB(THREE.MathUtils.lerp(0.62, 0.04, night), THREE.MathUtils.lerp(0.72, 0.06, night), THREE.MathUtils.lerp(0.84, 0.12, night));
+  renderer.toneMappingExposure = THREE.MathUtils.lerp(0.68, 0.62, night);
   sky.visible = night < 0.85;
   scene.background = night >= 0.85 ? scene.fog.color : null;
   if (mats.window) { mats.window.emissiveIntensity = 2.2 * night; mats.wallShop.emissiveIntensity = 0.15 + 2.6 * night; mats.wallGlass.emissiveIntensity = 1.8 * night; }
@@ -273,7 +274,8 @@ function refreshEnv() {                // sky reflections for water, glass and c
 }
 let composer = null, bloom = null;
 if (!LITE) {
-  composer = new EffectComposer(renderer);
+  const crt = new THREE.WebGLRenderTarget(innerWidth * renderer.getPixelRatio(), innerHeight * renderer.getPixelRatio(), { type: THREE.HalfFloatType, samples: ULTRA ? 4 : 2 });
+  composer = new EffectComposer(renderer, crt);      // multisampled → smooth edges even with effects on
   composer.addPass(new RenderPass(scene, camera));
   if (ULTRA) try {                                       // soft contact shadows in corners, under cars and trees
     const ao = new GTAOPass(scene, camera, innerWidth, innerHeight);
@@ -281,7 +283,7 @@ if (!LITE) {
     ao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 5, rings: 2, samples: 16 });
     ao.blendIntensity = 0.85; composer.addPass(ao);
   } catch (e) { console.warn('AO off:', e); }
-  bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.35, 0.6, 0.9);
+  bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.22, 0.5, 0.985);    // only lights glow, not white walls
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
   composer.addPass(new ShaderPass({                     // cinematic grade: a touch of warmth, contrast, saturation and a soft vignette
@@ -302,11 +304,12 @@ addEventListener('resize', () => {
 
 // =============================================================== procedural textures
 function canvasTex(w, h, draw, repeat = true, srgb = true) {
-  const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h);
+  const k = (ULTRA && srgb && w <= 512) ? 2 : 1;                       // Ultra: twice the texture detail
+  const c = document.createElement('canvas'); c.width = w * k; c.height = h * k; const cx = c.getContext('2d'); cx.scale(k, k); draw(cx, w, h);
   const t = new THREE.CanvasTexture(c);
   if (repeat) t.wrapS = t.wrapT = THREE.RepeatWrapping;
   if (srgb) t.colorSpace = THREE.SRGBColorSpace;
-  t.anisotropy = LITE ? 2 : 8;
+  t.anisotropy = LITE ? 2 : MAXANISO;
   return t;
 }
 let seed = 1;
@@ -339,7 +342,7 @@ const railTex = canvasTex(256, 256, (x, w, h) => {
 });
 // Building facade: 4×4 window bays per texture so the lit-window pattern varies. 1 bay = 3.2 m wide, 1 floor = 3.2 m.
 const facadeTex = canvasTex(512, 512, (x, w, h) => {
-  noiseFill(x, w, h, '#ffffff', 0.09, 9000, 3);
+  noiseFill(x, w, h, '#e6e0d6', 0.12, 12000, 3);
   for (let by = 0; by < 4; by++) for (let bx = 0; bx < 4; bx++) {
     const ox = bx * 128, oy = by * 128;
     x.fillStyle = 'rgba(0,0,0,.18)'; x.fillRect(ox + 30, oy + 28, 70, 8);              // chajja (sunshade) shadow
@@ -360,7 +363,7 @@ const windowLitTex = canvasTex(512, 512, (x, w, h) => {
 // Shops: ground floor = colourful shop fronts and signboards, upper floors = homes/offices.  (bottom row of the texture = ground floor)
 const SIGN = ['#d63031', '#0984e3', '#00b894', '#fdcb6e', '#e17055', '#6c5ce7', '#e84393', '#2d3436'];
 function shopDraw(x, w, h, lit) {
-  if (!lit) noiseFill(x, w, h, '#ffffff', 0.09, 7000, 3); else { x.fillStyle = '#000'; x.fillRect(0, 0, w, h); }
+  if (!lit) noiseFill(x, w, h, '#e6e0d6', 0.12, 9000, 3); else { x.fillStyle = '#000'; x.fillRect(0, 0, w, h); }
   for (let by = 0; by < 3; by++) for (let bx = 0; bx < 4; bx++) {
     const ox = bx * 128, oy = by * 128;
     if (lit) { if (rnd() < 0.5) { x.fillStyle = '#ffd59a'; x.fillRect(ox + 39, oy + 41, 50, 56); } continue; }
@@ -391,8 +394,9 @@ const glassTex = canvasTex(512, 512, (x, w, h) => {
 });
 const glassLitTex = canvasTex(512, 512, (x, w, h) => { x.fillStyle = '#000'; x.fillRect(0, 0, w, h); for (let j = 0; j < 8; j++) for (let i = 0; i < 8; i++) if (rnd() < 0.35) { x.fillStyle = '#fff1d0'; x.fillRect(i * 64 + 3, j * 64 + 4, 58, 56); } });
 const paverTex = canvasTex(256, 256, (x, w, h) => { noiseFill(x, w, h, '#b9b2a6', 0.14, 3000, 2); x.fillStyle = 'rgba(80,70,60,.25)'; for (let i = 0; i < 8; i++) { x.fillRect(0, i * 32, w, 2); x.fillRect(i * 32 + (i % 2) * 16, 0, 2, h); } });
-function normalTex(w, h, draw, strength = 3) {     // height drawing → normal map (bumps catch the sun)
-  const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d'); draw(x, w, h);
+function normalTex(w0, h0, draw, strength = 3) {     // height drawing → normal map (bumps catch the sun)
+  const k = ULTRA ? 2 : 1, w = w0 * k, h = h0 * k;
+  const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d'); x.scale(k, k); draw(x, w0, h0); x.setTransform(1, 0, 0, 1, 0, 0);
   const src = x.getImageData(0, 0, w, h).data, out = x.createImageData(w, h);
   const H = (i, j) => src[(((j + h) % h) * w + ((i + w) % w)) * 4] / 255;
   for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
@@ -401,7 +405,7 @@ function normalTex(w, h, draw, strength = 3) {     // height drawing → normal 
     out.data[o] = (nx / l * 0.5 + 0.5) * 255; out.data[o + 1] = (ny / l * 0.5 + 0.5) * 255; out.data[o + 2] = (nz / l * 0.5 + 0.5) * 255; out.data[o + 3] = 255;
   }
   x.putImageData(out, 0, 0);
-  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = LITE ? 2 : 8; return t;
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = LITE ? 2 : MAXANISO; return t;
 }
 const facadeNormal = normalTex(512, 512, (x, w, h) => {
   x.fillStyle = '#808080'; x.fillRect(0, 0, w, h);
@@ -635,8 +639,8 @@ function buildGlobal() {
     normals.wrapS = normals.wrapT = THREE.RepeatWrapping;
     const uv = merged.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) / 25, uv.getY(i) / 25);
     waterFX = new Water(merged, { textureWidth: ULTRA ? 1024 : isTouch ? 256 : 512, textureHeight: ULTRA ? 1024 : isTouch ? 256 : 512, waterNormals: normals, sunDirection: sunDir.clone().normalize(),
-      sunColor: 0xffe2b0, waterColor: 0x1f4a4a, distortionScale: 2.2, fog: true, alpha: 1 });
-    waterFX.material.uniforms.size.value = 0.9;
+      sunColor: 0xfff1d6, waterColor: 0x0b3a3c, distortionScale: 3.6, fog: true, alpha: 1 });
+    waterFX.material.uniforms.size.value = 1.6;
     waterFX.rotation.x = -Math.PI / 2; waterFX.position.y = 0.03; scene.add(waterFX);
   } else for (const rs of world.water) { const w = polyMesh(rs, 0.03, mats.water); w.receiveShadow = false; scene.add(w); }
   for (const rs of world.sand) scene.add(polyMesh(rs, 0.04, mats.sand));
@@ -716,7 +720,7 @@ function binChunks() {
     const k = chunkKey(i, j); if (!chunks.has(k)) chunks.set(k, { items: { b: [], r: [] }, built: null });
   }
 }
-const PALETTE = [[0.96, 0.93, 0.86], [0.98, 0.9, 0.72], [0.95, 0.82, 0.78], [0.86, 0.93, 0.85], [0.99, 0.97, 0.94], [0.92, 0.86, 0.95], [0.85, 0.9, 0.97], [0.97, 0.84, 0.62], [0.9, 0.9, 0.88]];
+const PALETTE = [[0.93, 0.85, 0.7], [0.96, 0.78, 0.5], [0.9, 0.66, 0.58], [0.72, 0.84, 0.7], [0.9, 0.88, 0.82], [0.82, 0.72, 0.86], [0.68, 0.8, 0.9], [0.95, 0.72, 0.45], [0.8, 0.78, 0.74], [0.98, 0.86, 0.6], [0.86, 0.6, 0.5], [0.62, 0.76, 0.78]];
 // One low-poly car shape shared by parked cars and traffic. Body is white so each car can get its own paint colour.
 const carShellGeo = (() => {
   const parts = [], paint = (g, rgb) => { const n = g.attributes.position.count, c = new Float32Array(n * 3); for (let i = 0; i < n; i++) c.set(rgb, i * 3); g.setAttribute('color', new THREE.BufferAttribute(c, 3)); parts.push(g); };
