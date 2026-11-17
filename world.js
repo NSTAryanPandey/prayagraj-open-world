@@ -149,6 +149,8 @@ async function getMap(getDb) {
 function attach(app, io, getDb) {
   app.get(['/', '/world'], (_req, res) => res.sendFile(path.join(__dirname, 'index.html')));       // the game page
   app.get('/icon.png', (_req, res) => res.sendFile(path.join(__dirname, 'icon.png')));
+  // public settings for the game page (the Mapbox token lives in Render's environment, not in the GitHub repo)
+  app.get('/world/config', (_req, res) => res.json({ mapboxToken: process.env.MAPBOX_TOKEN || null }));
   app.get('/world/map.json', async (req, res) => {
     try {
       const gz = await getMap(getDb);

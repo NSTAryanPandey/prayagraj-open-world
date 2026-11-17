@@ -533,6 +533,39 @@ let tipI = 0; const tipEl = document.getElementById('tip'), loadbar = document.g
 const tipTimer = setInterval(() => { tipEl.style.opacity = 0; setTimeout(() => { tipEl.textContent = '💡 ' + TIPS[tipI++ % TIPS.length]; tipEl.style.opacity = 0.6; }, 450); }, 4200);
 tipEl.textContent = '💡 ' + TIPS[tipI++];
 function setProgress(p, text) { loadbar.style.width = p + '%'; if (text) loadtext.textContent = text; }
+var SAT_TOKEN = null; const GEO = { lat0: 0, lon0: 0, kx: 1, kz: 110540 };
+// ---- real satellite photos on the ground (Mapbox). Web-mercator tiles mapped onto our local metres.
+function buildSatellite() {
+  const Z = 16, n = 2 ** Z, PI = Math.PI;
+  const lon2x = lon => (lon + 180) / 360 * n, lat2y = lat => (1 - Math.log(Math.tan(lat * PI / 180) + 1 / Math.cos(lat * PI / 180)) / PI) / 2 * n;
+  const x2lon = x => x / n * 360 - 180, y2lat = y => { const m = PI - 2 * PI * y / n; return 180 / PI * Math.atan(0.5 * (Math.exp(m) - Math.exp(-m))); };
+  const toX = lon => (lon - GEO.lon0) * GEO.kx, toZ = lat => -(lat - GEO.lat0) * GEO.kz;
+  const pad = 300;
+  const tx0 = Math.floor(lon2x(GEO.lon0 + (B.x0 - pad) / GEO.kx)), tx1 = Math.floor(lon2x(GEO.lon0 + (B.x1 + pad) / GEO.kx));
+  const ty0 = Math.floor(lat2y(GEO.lat0 - (B.z0 - pad) / GEO.kz)), ty1 = Math.floor(lat2y(GEO.lat0 - (B.z1 + pad) / GEO.kz));
+  const tiles = [];
+  for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) {
+    const x0 = toX(x2lon(tx)), x1 = toX(x2lon(tx + 1)), z0 = toZ(y2lat(ty)), z1 = toZ(y2lat(ty + 1));
+    tiles.push({ tx, ty, x0, x1, z0, z1, d: Math.hypot((x0 + x1) / 2 - spawn.x, (z0 + z1) / 2 - spawn.z) });
+  }
+  tiles.sort((a, b) => a.d - b.d);                         // nearest photos first
+  const loader = new THREE.TextureLoader(); loader.setCrossOrigin('anonymous');
+  const geo = new THREE.PlaneGeometry(1, 1); geo.rotateX(-Math.PI / 2);
+  let i = 0, active = 0, failed = 0;
+  const next = () => {
+    while (active < 6 && i < tiles.length) {
+      const t = tiles[i++]; active++;
+      loader.load(`https://api.mapbox.com/v4/mapbox.satellite/${Z}/${t.tx}/${t.ty}@2x.jpg90?access_token=${SAT_TOKEN}`, (tex) => {
+        tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = MAXANISO; tex.generateMipmaps = true;
+        const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: tex, roughness: 0.96 }));
+        m.scale.set(t.x1 - t.x0, 1, t.z1 - t.z0); m.position.set((t.x0 + t.x1) / 2, 0.012, (t.z0 + t.z1) / 2); m.receiveShadow = true;
+        scene.add(m); active--; next();
+      }, undefined, () => { active--; failed++; if (failed === 5) console.warn('Satellite photos failed to load (check the Mapbox token and its URL restriction).'); next(); });
+    }
+  };
+  next();
+  document.getElementById('osm').innerHTML += ' · Imagery © <a href="https://www.mapbox.com/about/maps/" target="_blank" rel="noopener">Mapbox</a> © Maxar';
+}
 async function loadWorld() {
   const t0 = performance.now();
   setProgress(6, 'Downloading the real map of Prayagraj…');
@@ -547,6 +580,8 @@ async function loadWorld() {
   clearInterval(tick);
   if (!res || !res.ok) { loadtext.textContent = 'Could not load the map right now. Please refresh in a minute.'; throw new Error('map'); }
   const raw = await res.json();
+  try { const cfg = await fetch('/world/config').then(r => r.json()); SAT_TOKEN = cfg.mapboxToken || null; } catch (e) { SAT_TOKEN = null; }
+  GEO.lat0 = raw.lat0; GEO.lon0 = raw.lon0; GEO.kx = 111320 * Math.cos(raw.lat0 * Math.PI / 180);
   setProgress(68, 'Laying the rivers and roads…');
   await new Promise(r => setTimeout(r, 40));
   const m = (a) => a.map(v => v / 10);
@@ -631,7 +666,8 @@ function buildGlobal() {
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(B.x1 - B.x0 + 4000, B.z1 - B.z0 + 4000), mats.ground);
   const gu = ground.geometry.attributes.uv; for (let i = 0; i < gu.count; i++) gu.setXY(i, gu.getX(i) * (B.x1 - B.x0 + 4000), gu.getY(i) * (B.z1 - B.z0 + 4000));
   ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
-  for (const g of world.green) scene.add(polyMesh([g.pts], 0.02, g.k === 4 ? mats.wood : g.k === 5 ? mats.farm : mats.grass));
+  if (SAT_TOKEN) buildSatellite();                                 // real photo ground replaces the drawn parks and sand
+  else for (const g of world.green) scene.add(polyMesh([g.pts], 0.02, g.k === 4 ? mats.wood : g.k === 5 ? mats.farm : mats.grass));
   if (!LITE) {                                   // one reflective river surface (real sky + city reflections)
     const geos = world.water.map(rs => polyMesh(rs, 0, mats.water).geometry);
     const merged = mergeGeometries(geos); geos.forEach(g => g.dispose());
@@ -643,7 +679,7 @@ function buildGlobal() {
     waterFX.material.uniforms.size.value = 1.6;
     waterFX.rotation.x = -Math.PI / 2; waterFX.position.y = 0.03; scene.add(waterFX);
   } else for (const rs of world.water) { const w = polyMesh(rs, 0.03, mats.water); w.receiveShadow = false; scene.add(w); }
-  for (const rs of world.sand) scene.add(polyMesh(rs, 0.04, mats.sand));
+  if (!SAT_TOKEN) for (const rs of world.sand) scene.add(polyMesh(rs, 0.04, mats.sand));
   // railway lines
   const ro = { pos: [], uv: [], idx: [] }; for (const r of world.rail) ribbon(r, 3.4, 0.09, ro, 3.4);
   if (ro.pos.length) { const m = new THREE.Mesh(toGeo(ro), mats.rail); m.receiveShadow = true; scene.add(m); }
