@@ -18,7 +18,7 @@ const CACHE_FILE = path.join(__dirname, 'data', `${AREA.id}.json.gz`);
 
 function overpassQuery(a) {
   const bb = `${a.south},${a.west},${a.north},${a.east}`;
-  return `[out:json][timeout:240][maxsize:1073741824];(
+  return `[out:json][timeout:180][maxsize:536870912];(
     way["highway"](${bb}); way["building"](${bb});
     way["natural"~"^(water|sand|beach|wood|scrub)$"](${bb}); relation["natural"~"^(water|sand)$"](${bb});
     way["waterway"~"^(river|riverbank|canal)$"](${bb}); way["railway"="rail"](${bb});
@@ -113,23 +113,46 @@ function processOSM(j, lat0, lon0) {
 }
 
 let cached = null, pending = null;     // gzipped compact JSON
-async function fetchOverpass() {
-  const body = 'data=' + encodeURIComponent(overpassQuery(AREA));
+// The big area is downloaded as a 3×3 grid of pieces (each about the size that works well on the free map servers),
+// one after another, so no single request is too big and the server never holds all the raw data at once.
+const GRID = 3, doneTiles = new Map(), seen = new Set();   // finished pieces survive a failed attempt, so a retry continues where it stopped
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+async function fetchOverpass(bb, start = 0) {
+  const body = 'data=' + encodeURIComponent(overpassQuery(bb));
   let lastErr;
-  for (const url of MIRRORS) {
+  for (let k = 0; k < MIRRORS.length * 2; k++) {
+    const url = MIRRORS[(start + k) % MIRRORS.length];
     try {
-      const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 280000);
+      const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 200000);
       const res = await fetch(url, { method: 'POST', body, signal: ctl.signal,
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'ArchVizStudio-OpenWorld/1.0 (student game)' } });
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'PrayagrajOpenWorld/1.0 (student game)' } });
       clearTimeout(timer);
       if (!res.ok) throw new Error(`${url} → HTTP ${res.status}`);
       const j = await res.json();
-      if (!j.elements || !j.elements.length) throw new Error(`${url} → empty`);
-      console.log(`World map downloaded from ${url}: ${j.elements.length} map features`);
+      if (!j.elements) throw new Error(`${url} → no data`);
       return j;
-    } catch (err) { lastErr = err; console.warn('World map mirror failed:', err.message); }
+    } catch (err) { lastErr = err; console.warn('World map mirror failed:', err.message); await sleep(3000); }
   }
   throw lastErr || new Error('no map server reachable');
+}
+async function downloadWorld() {
+  const merged = { v: 2, lat0: AREA.lat0, lon0: AREA.lon0, roads: [], buildings: [], water: [], sand: [], green: [], rail: [], labels: [], forts: [] };
+  const dLat = (AREA.north - AREA.south) / GRID, dLon = (AREA.east - AREA.west) / GRID;
+  for (let i = 0; i < GRID; i++) for (let k = 0; k < GRID; k++) {
+    const key = i * GRID + k;
+    if (!doneTiles.has(key)) {
+      const bb = { south: AREA.south + i * dLat, north: AREA.south + (i + 1) * dLat, west: AREA.west + k * dLon, east: AREA.west + (k + 1) * dLon };
+      const j = await fetchOverpass(bb, key);
+      const els = j.elements.filter(e => { const id = e.type[0] + e.id; if (seen.has(id)) return false; seen.add(id); return true; });
+      doneTiles.set(key, processOSM({ elements: els }, AREA.lat0, AREA.lon0));   // keep only the compact result of this piece
+      console.log(`World map piece ${key + 1}/${GRID * GRID}: ${j.elements.length} features`);
+      await sleep(1500);
+    }
+    const part = doneTiles.get(key);
+    for (const n of ['roads', 'buildings', 'water', 'sand', 'green', 'rail', 'labels', 'forts']) for (const x of part[n]) merged[n].push(x);
+  }
+  doneTiles.clear(); seen.clear();
+  return merged;
 }
 async function getMap(getDb) {
   if (cached) return cached;
@@ -140,7 +163,7 @@ async function getMap(getDb) {
       if (db) { const doc = await db.collection('world').findOne({ _id: AREA.id }); if (doc && doc.gz) return (cached = Buffer.from(doc.gz.buffer || doc.gz)); }
       else if (fs.existsSync(CACHE_FILE)) return (cached = fs.readFileSync(CACHE_FILE));
     } catch (err) { console.warn('World cache read failed:', err.message); }
-    const world = processOSM(await fetchOverpass(), AREA.lat0, AREA.lon0);   // 2) download + prepare
+    const world = await downloadWorld();                                   // 2) download + prepare, piece by piece
     world.area = { name: AREA.name, south: AREA.south, west: AREA.west, north: AREA.north, east: AREA.east };
     const gz = zlib.gzipSync(JSON.stringify(world), { level: 9 });
     console.log(`World ready: ${world.buildings.length} buildings, ${world.roads.length} roads, ${(gz.length / 1024).toFixed(0)} KB`);

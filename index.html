@@ -834,7 +834,6 @@ function buildLandmarks() {
     put(g, akshay.x, akshay.z);
   }
   // Triveni Sangam: wooden platforms on the water, saffron flags and big umbrellas on the sand
-  const sangamM = missions.length ? null : null;
   let sx = null, sz = null; const sl = findLabel(/sangam/i); if (sl) { sx = sl.x; sz = sl.z; }
   if (sx === null) { let big = null, ba = 0; for (const rs of world.sand) { const r = rs[0]; let a = 0, cx = 0, cz = 0; const nn = r.length / 2; for (let i = 0; i < r.length; i += 2) { cx += r[i]; cz += r[i + 1]; } for (let i = 0, k = nn - 1; i < nn; k = i++) a += r[k * 2] * r[i * 2 + 1] - r[i * 2] * r[k * 2 + 1]; if (Math.abs(a) > ba) { ba = Math.abs(a); big = { x: cx / nn, z: cz / nn }; } } if (big) { sx = big.x; sz = big.z; } }
   if (sx !== null) {
