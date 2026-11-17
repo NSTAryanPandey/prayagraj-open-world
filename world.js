@@ -13,6 +13,7 @@ const MIRRORS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
   'https://overpass.private.coffee/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
 ];
 const CACHE_FILE = path.join(__dirname, 'data', `${AREA.id}.json.gz`);
 
@@ -113,17 +114,17 @@ function processOSM(j, lat0, lon0) {
 }
 
 let cached = null, pending = null;     // gzipped compact JSON
-// The big area is downloaded as a 3×3 grid of pieces (each about the size that works well on the free map servers),
+// The big area is downloaded as a 4×4 grid of pieces (each about the size that works well on the free map servers),
 // one after another, so no single request is too big and the server never holds all the raw data at once.
-const GRID = 3, doneTiles = new Map(), seen = new Set();   // finished pieces survive a failed attempt, so a retry continues where it stopped
+const GRID = 4, doneTiles = new Map(), seen = new Set();   // finished pieces survive a failed attempt, so a retry continues where it stopped
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 async function fetchOverpass(bb, start = 0) {
   const body = 'data=' + encodeURIComponent(overpassQuery(bb));
   let lastErr;
-  for (let k = 0; k < MIRRORS.length * 2; k++) {
+  for (let k = 0; k < MIRRORS.length; k++) {
     const url = MIRRORS[(start + k) % MIRRORS.length];
     try {
-      const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 200000);
+      const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 150000);
       const res = await fetch(url, { method: 'POST', body, signal: ctl.signal,
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'PrayagrajOpenWorld/1.0 (student game)' } });
       clearTimeout(timer);
@@ -154,6 +155,7 @@ async function downloadWorld() {
   doneTiles.clear(); seen.clear();
   return merged;
 }
+let lastError = null;
 async function getMap(getDb) {
   if (cached) return cached;
   if (pending) return pending;
@@ -172,7 +174,11 @@ async function getMap(getDb) {
       else { fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true }); fs.writeFileSync(CACHE_FILE, gz); }
     } catch (err) { console.warn('World cache write failed:', err.message); }
     return (cached = gz);
-  })().finally(() => { pending = null; });
+  })().then((gz) => { lastError = null; return gz; }, (err) => {
+    lastError = err.message; console.warn('World map not ready yet, retrying in 90 s:', err.message);
+    setTimeout(() => getMap(getDb).catch(() => {}), 90000);                  // keep trying on its own until it's done
+    throw err;
+  }).finally(() => { pending = null; });
   return pending;
 }
 
@@ -182,6 +188,10 @@ function attach(app, io, getDb) {
   // public settings for the game page (the Mapbox token lives in Render's environment, not in the GitHub repo)
   app.get('/world/config', (_req, res) => res.json({ mapboxToken: process.env.MAPBOX_TOKEN || null }));
   app.get('/world/map.json', async (req, res) => {
+    if (!cached) {                                     // still building: answer at once with progress, the game asks again
+      getMap(getDb).catch(() => {});
+      return res.status(503).set('Cache-Control', 'no-store').json({ building: true, done: doneTiles.size, total: GRID * GRID, lastError });
+    }
     try {
       const gz = await getMap(getDb);
       res.set({ 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=86400' });

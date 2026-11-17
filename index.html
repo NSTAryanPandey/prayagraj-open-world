@@ -606,12 +606,16 @@ async function loadWorld() {
   const t0 = performance.now();
   setProgress(6, 'Downloading the real map of Prayagraj…');
   const tick = setInterval(() => { const e = (performance.now() - t0) / 1000; setProgress(Math.min(60, 6 + e * 4), `Downloading the real map of Prayagraj… ${Math.round(e)}s`); }, 500);
-  let res;
-  for (let attempt = 0; attempt < 6; attempt++) {
-    res = await fetch('/world/map.json').catch(() => null);
+  let res, building = false;
+  for (let attempt = 0; attempt < 400; attempt++) {                // the first time, the server builds the big map piece by piece
+    res = await fetch('/world/map.json?v=2', { cache: attempt ? 'no-store' : 'default' }).catch(() => null);
     if (res && res.ok) break;
-    loadtext.textContent = 'The map server is busy, trying again…';
-    await new Promise(r => setTimeout(r, 8000));
+    const info = res ? await res.json().catch(() => null) : null;
+    if (info && info.building) {
+      if (!building) { building = true; clearInterval(tick); }
+      setProgress(6 + 54 * info.done / info.total, `Building the big map of Prayagraj (first time only): piece ${info.done} of ${info.total}…`);
+    } else loadtext.textContent = 'The map server is busy, trying again…';
+    await new Promise(r => setTimeout(r, 5000));
   }
   clearInterval(tick);
   if (!res || !res.ok) { loadtext.textContent = 'Could not load the map right now. Please refresh in a minute.'; throw new Error('map'); }
