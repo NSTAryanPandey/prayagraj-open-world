@@ -221,7 +221,7 @@ const MAXANISO = Math.min(16, renderer.capabilities.getMaxAnisotropy());
 // sky, sun, haze
 const sky = new Sky(); sky.scale.setScalar(20000); scene.add(sky);
 const skyU = sky.material.uniforms;
-skyU.turbidity.value = 1.6; skyU.rayleigh.value = 2.2; skyU.mieCoefficient.value = 0.002; skyU.mieDirectionalG.value = 0.8;
+skyU.turbidity.value = 1.1; skyU.rayleigh.value = 3.0; skyU.mieCoefficient.value = 0.002; skyU.mieDirectionalG.value = 0.8;
 const sun = new THREE.DirectionalLight(0xfff1dc, 3.0);
 sun.castShadow = !LITE;
 const SH = isTouch ? 2048 : 4096, SR = isTouch ? 90 : 120;
@@ -258,7 +258,7 @@ function applySky() {
   hemi.intensity = THREE.MathUtils.lerp(0.55, 0.12, night);
   hemi.color.setHSL(0.6, 0.5, THREE.MathUtils.lerp(0.85, 0.35, night));
   scene.fog.color.setRGB(THREE.MathUtils.lerp(0.62, 0.04, night), THREE.MathUtils.lerp(0.72, 0.06, night), THREE.MathUtils.lerp(0.84, 0.12, night));
-  renderer.toneMappingExposure = THREE.MathUtils.lerp(0.68, 0.62, night);
+  renderer.toneMappingExposure = THREE.MathUtils.lerp(0.62, 0.6, night);
   sky.visible = night < 0.85;
   scene.background = night >= 0.85 ? scene.fog.color : null;
   if (mats.window) { mats.window.emissiveIntensity = 2.2 * night; mats.wallShop.emissiveIntensity = 0.15 + 2.6 * night; mats.wallGlass.emissiveIntensity = 1.8 * night; }
@@ -283,7 +283,7 @@ if (!LITE) {
     ao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 5, rings: 2, samples: 16 });
     ao.blendIntensity = 0.85; composer.addPass(ao);
   } catch (e) { console.warn('AO off:', e); }
-  bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.22, 0.5, 0.985);    // only lights glow, not white walls
+  bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.22, 0.5, 1.6);      // only real lights glow, not sunlit white paint
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
   composer.addPass(new ShaderPass({                     // cinematic grade: a touch of warmth, contrast, saturation and a soft vignette
@@ -464,10 +464,17 @@ mats.window = mats.wall;
 // =============================================================== world data
 const hud = document.getElementById('hud'), loadtext = document.getElementById('loadtext');
 let world = null, spawn = { x: 0, z: 0 };
-const B = { x0: -2700, z0: -2300, x1: 2700, z1: 2300 };               // playable bounds (metres)
-const GS = 2, GW = Math.ceil((B.x1 - B.x0) / GS), GH = Math.ceil((B.z1 - B.z0) / GS);
-const solid = new Uint8Array(GW * GH);      // 0 free · 1 building · 2 water · 3 bridge deck
-const land = new Uint8Array(GW * GH);       // green kind 1..5 · 8 road
+let B = { x0: -2700, z0: -2300, x1: 2700, z1: 2300 };                 // playable bounds (metres), set from the map area
+let GS = 2, GW = 1, GH = 1;
+let solid = new Uint8Array(1);              // 0 free · 1 building · 2 water · 3 bridge deck
+let land = new Uint8Array(1);               // green kind 1..5 · 8 road · 9 main road
+function setArea(a) {
+  if (a) B = { x0: (a.west - GEO.lon0) * GEO.kx, x1: (a.east - GEO.lon0) * GEO.kx, z0: -(a.north - GEO.lat0) * GEO.kz, z1: -(a.south - GEO.lat0) * GEO.kz };
+  const km2 = (B.x1 - B.x0) * (B.z1 - B.z0) / 1e6;
+  GS = km2 > 40 ? 3 : 2; GW = Math.ceil((B.x1 - B.x0) / GS); GH = Math.ceil((B.z1 - B.z0) / GS);
+  solid = new Uint8Array(GW * GH); land = new Uint8Array(GW * GH);
+  MAPS = Math.min(LITE ? 0.25 : 0.4, 2600 / (B.x1 - B.x0));
+}
 const cellOf = (x, z) => { const i = Math.floor((x - B.x0) / GS), j = Math.floor((z - B.z0) / GS); return (i < 0 || j < 0 || i >= GW || j >= GH) ? -1 : j * GW + i; };
 const solidAt = (x, z) => { const c = cellOf(x, z); return c < 0 ? 9 : solid[c]; };
 
@@ -534,8 +541,34 @@ let tipI = 0; const tipEl = document.getElementById('tip'), loadbar = document.g
 const tipTimer = setInterval(() => { tipEl.style.opacity = 0; setTimeout(() => { tipEl.textContent = '💡 ' + TIPS[tipI++ % TIPS.length]; tipEl.style.opacity = 0.6; }, 450); }, 4200);
 tipEl.textContent = '💡 ' + TIPS[tipI++];
 function setProgress(p, text) { loadbar.style.width = p + '%'; if (text) loadtext.textContent = text; }
-var SAT_TOKEN = null; const GEO = { lat0: 0, lon0: 0, kx: 1, kz: 110540 };
+var SAT_TOKEN = null, MAPS = 0.4; const GEO = { lat0: 0, lon0: 0, kx: 1, kz: 110540 };
 // ---- real satellite photos on the ground (Mapbox). Web-mercator tiles mapped onto our local metres.
+// Close-up detail on top of the satellite photo: fine soil/grass grain that fades in near the camera,
+// so the ground stays sharp at street level instead of looking blurry.
+const satDetail = canvasTex(256, 256, (x, w, h) => {
+  const img = x.createImageData(w, h);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const o = (j * w + i) * 4, fine = 128 + (rnd() - 0.5) * 150, blob = 128 + 70 * Math.sin(i * 0.11 + Math.sin(j * 0.07) * 2) * Math.cos(j * 0.09 + Math.sin(i * 0.05) * 2);
+    img.data[o] = fine; img.data[o + 1] = blob; img.data[o + 2] = 128; img.data[o + 3] = 255;
+  }
+  x.putImageData(img, 0, 0);
+}, true, false);
+function satMaterial(tex) {
+  const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.96 });
+  mat.onBeforeCompile = (sh) => {
+    sh.uniforms.detailMap = { value: satDetail };
+    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nvarying vec3 vSatW;')
+      .replace('#include <project_vertex>', '#include <project_vertex>\nvSatW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec3 vSatW; uniform sampler2D detailMap;')
+      .replace('#include <map_fragment>', `#include <map_fragment>
+        float satD = distance(vSatW, cameraPosition), satF = 1.0 - smoothstep(12.0, 150.0, satD);
+        float satT = texture2D(detailMap, vSatW.xz / 2.2).r * 0.55 + texture2D(detailMap, vSatW.xz / 13.0).g * 0.45;
+        diffuseColor.rgb *= mix(1.0, 0.86 + satT * 0.3, satF) * 1.32;`);
+  };
+  mat.customProgramCacheKey = () => 'sat-detail';
+  return mat;
+}
+let satStream = null, satT = 0;
 function buildSatellite() {
   const Z = 15, n = 2 ** Z, PI = Math.PI;              // 1024-px photos at zoom 15 ≈ 1 m per pixel, about 30 photos per visit
   const lon2x = lon => (lon + 180) / 360 * n, lat2y = lat => (1 - Math.log(Math.tan(lat * PI / 180) + 1 / Math.cos(lat * PI / 180)) / PI) / 2 * n;
@@ -549,22 +582,24 @@ function buildSatellite() {
     const x0 = toX(x2lon(tx)), x1 = toX(x2lon(tx + 1)), z0 = toZ(y2lat(ty)), z1 = toZ(y2lat(ty + 1));
     tiles.push({ tx, ty, x0, x1, z0, z1, d: Math.hypot((x0 + x1) / 2 - spawn.x, (z0 + z1) / 2 - spawn.z) });
   }
-  tiles.sort((a, b) => a.d - b.d);                         // nearest photos first
   const loader = new THREE.TextureLoader(); loader.setCrossOrigin('anonymous');
   const geo = new THREE.PlaneGeometry(1, 1); geo.rotateX(-Math.PI / 2);
-  let i = 0, active = 0, failed = 0;
-  const next = () => {
-    while (active < 4 && i < tiles.length) {
-      const t = tiles[i++]; active++;
+  let active = 0, failed = 0;
+  satStream = () => {                                      // called a few times a second: load near photos, free far ones
+    for (const t of tiles) t.d = Math.hypot((t.x0 + t.x1) / 2 - focus.x, (t.z0 + t.z1) / 2 - focus.z);
+    for (const t of tiles) if (t.mesh && t.d > 3800) { scene.remove(t.mesh); t.mesh.material.map.dispose(); t.mesh.material.dispose(); t.mesh = null; t.state = 0; }
+    const want = tiles.filter(t => !t.state && t.d < (ULTRA ? 2600 : 2000)).sort((a, b) => a.d - b.d);
+    while (active < 4 && want.length && failed < 40) {
+      const t = want.shift(); t.state = 1; active++;
       loader.load(`https://api.mapbox.com/styles/v1/mapbox/satellite-v9/tiles/512/${Z}/${t.tx}/${t.ty}@2x?access_token=${SAT_TOKEN}`, (tex) => {
         tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = MAXANISO; tex.generateMipmaps = true;
-        const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: tex, roughness: 0.96 }));
+        const m = new THREE.Mesh(geo, satMaterial(tex));
         m.scale.set(t.x1 - t.x0, 1, t.z1 - t.z0); m.position.set((t.x0 + t.x1) / 2, 0.012, (t.z0 + t.z1) / 2); m.receiveShadow = true;
-        scene.add(m); active--; next();
-      }, undefined, () => { active--; failed++; if (failed === 5) console.warn('Satellite photos failed to load (check the Mapbox token and its URL restriction).'); next(); });
+        scene.add(m); t.mesh = m; t.state = 2; active--;
+      }, undefined, () => { active--; failed++; t.state = 3; if (failed === 5) console.warn('Satellite photos failed to load (check the Mapbox token).'); });
     }
   };
-  next();
+  satStream();
   document.getElementById('osm').innerHTML += ' · Imagery © <a href="https://www.mapbox.com/about/maps/" target="_blank" rel="noopener">Mapbox</a> © Maxar';
 }
 async function loadWorld() {
@@ -583,6 +618,7 @@ async function loadWorld() {
   const raw = await res.json();
   try { const cfg = await fetch('/world/config').then(r => r.json()); SAT_TOKEN = cfg.mapboxToken || null; } catch (e) { SAT_TOKEN = null; }
   GEO.lat0 = raw.lat0; GEO.lon0 = raw.lon0; GEO.kx = 111320 * Math.cos(raw.lat0 * Math.PI / 180);
+  setArea(raw.area);
   setProgress(68, 'Laying the rivers and roads…');
   await new Promise(r => setTimeout(r, 40));
   const m = (a) => a.map(v => v / 10);
@@ -592,6 +628,7 @@ async function loadWorld() {
     water: raw.water.map(rs => rs.map(m)), sand: raw.sand.map(rs => rs.map(m)),
     green: raw.green.map(([k, p]) => ({ k, pts: m(p) })), rail: raw.rail.map(m),
     labels: raw.labels.map(([n, x, z, k]) => ({ n, x: x / 10, z: z / 10, k })).filter(l => l.x > B.x0 && l.x < B.x1 && l.z > B.z0 && l.z < B.z1),
+    forts: (raw.forts || []).map(m),
   };
   // rasterise: green, water, buildings, roads, bridges
   for (const g of world.green) fillPoly([g.pts], land, g.k);
@@ -719,7 +756,13 @@ function buildGlobal() {
     }
   }
   // place names floating above the city
-  for (const l of world.labels) { const sp = labelSprite(l.n, l.k === 'river' ? 26 : 8); sp.position.set(l.x, l.k === 'river' ? 30 : 16, l.z); scene.add(sp); }
+  const AREA_KINDS = ['suburb', 'neighbourhood', 'quarter', 'town', 'village', 'locality'];
+  for (const l of world.labels) {
+    const big = AREA_KINDS.includes(l.k), named = /hanuman|fort|qila|kila|akshay|shankar|vimana|sangam|madhav|ghat/i.test(l.n);
+    if (!(big || named || l.k === 'river' || l.k === 'park' || l.k === 'water')) continue;
+    const sp = labelSprite(l.n, l.k === 'river' ? 26 : big ? 34 : 8); sp.position.set(l.x, l.k === 'river' ? 30 : big ? 70 : 16, l.z); scene.add(sp);
+  }
+  buildLandmarks();
 }
 function labelSprite(text, size) {
   const c = document.createElement('canvas'), x = c.getContext('2d'); x.font = 'bold 64px Inter, Arial, sans-serif';
@@ -731,6 +774,95 @@ function labelSprite(text, size) {
   sp.scale.set(size * w / 100, size, 1); return sp;
 }
 
+// ---- famous places of Prayagraj, built by hand and placed where the map data says they are
+const sandstone = std({ color: 0xa65a3a, roughness: 0.85 }), creamStone = std({ color: 0xf1e6cf, roughness: 0.7 }), saffron = std({ color: 0xff8c1a, roughness: 0.6, side: THREE.DoubleSide });
+const templeRed = std({ color: 0xc8402a, roughness: 0.6 }), goldMat = std({ color: 0xd4a017, metalness: 0.9, roughness: 0.25 });
+function findLabel(re) { return world.labels.find(l => re.test(l.n)); }
+function flag(x, z, h = 9) {                               // tall pole with a triangular saffron flag
+  const g = new THREE.Group(); g.add(cyl(0.06, 0.08, h, mats.pole, 0, h / 2, 0, 6));
+  const f = new THREE.Mesh(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, h, 0), new THREE.Vector3(0, h - 1.4, 0), new THREE.Vector3(2.2, h - 0.6, 0)]), saffron);
+  f.geometry.computeVertexNormals(); g.add(f); g.position.set(x, heightAt(x, z), z); g.userData.flag = f; return g;
+}
+function shikhara(height, radius, mat) {                   // curved temple spire (lathe) with a gold kalash on top
+  const pts = []; for (let i = 0; i <= 12; i++) { const t = i / 12; pts.push(new THREE.Vector2(radius * Math.pow(1 - t, 0.75) * (1 + 0.08 * Math.sin(t * 40)), t * height)); }
+  const g = new THREE.Group(); const m = new THREE.Mesh(new THREE.LatheGeometry(pts, 8), mat); m.castShadow = true; g.add(m);
+  g.add(cyl(0.05, radius * 0.18, radius * 0.5, goldMat, 0, height + radius * 0.25, 0, 10)); return g;
+}
+function temple(x, z, scale = 1, spireMat = templeRed) {
+  const g = new THREE.Group(), s = scale;
+  g.add(rbox(14 * s, 1.2 * s, 14 * s, creamStone, 0, 0.6 * s, 0, 0.1));             // plinth
+  g.add(rbox(9 * s, 6 * s, 9 * s, creamStone, 0, 4.2 * s, 0, 0.2));                 // sanctum
+  g.add(rbox(7 * s, 4 * s, 6 * s, creamStone, 0, 3.2 * s, 7 * s, 0.2));             // porch (mandapa)
+  for (const sx of [-1, 1]) for (const sz of [4.6, 9.4]) g.add(cyl(0.35 * s, 0.4 * s, 4 * s, creamStone, sx * 3 * s, 3.2 * s, sz * s, 10));
+  const sp = shikhara(13 * s, 4.6 * s, spireMat); sp.position.y = 7.2 * s; g.add(sp);
+  const sp2 = shikhara(5 * s, 2.6 * s, spireMat); sp2.position.set(0, 5.2 * s, 7 * s); g.add(sp2);
+  g.add(flag(4 * s, -4 * s, 24 * s)); g.position.set(x, 0, z); return g;
+}
+function buildLandmarks() {
+  const placed = [];
+  const put = (obj, x, z) => { obj.position.x = x; obj.position.z = z; scene.add(obj); placed.push(obj); };
+  // Fort: red sandstone walls with battlements and round bastions, along the real outline
+  for (const ring of world.forts) {
+    const n = ring.length / 2, g = new THREE.Group();
+    for (let a = 0; a < n; a++) {
+      const b = (a + 1) % n, ax = ring[a * 2], az = ring[a * 2 + 1], bx = ring[b * 2], bz = ring[b * 2 + 1], L = Math.hypot(bx - ax, bz - az); if (L < 1) continue;
+      const wall = rbox(L, 9, 3, sandstone, (ax + bx) / 2, 4.5, (az + bz) / 2, 0.2); wall.rotation.y = -Math.atan2(bz - az, bx - ax); g.add(wall);
+      for (let d = 1.5; d < L; d += 3) { const t = d / L, mer = box(1.4, 1.4, 3.2, sandstone, ax + (bx - ax) * t, 9.7, az + (bz - az) * t); mer.rotation.y = wall.rotation.y; g.add(mer); }
+      const tw = cyl(3.2, 3.6, 12, sandstone, ax, 6, az, 16); g.add(tw);
+      const dome = new THREE.Mesh(new THREE.SphereGeometry(2.6, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2), creamStone); dome.position.set(ax, 13.6, az); dome.castShadow = true; g.add(dome);
+      g.add(box(0.3, 1.2, 0.3, creamStone, ax, 16.6, az));
+    }
+    scene.add(g); placed.push(g);
+  }
+  // Temples at their real spots
+  const hanuman = findLabel(/bade hanuman|lete hanuman|hanuman/i); if (hanuman) put(temple(0, 0, 1.0, templeRed), hanuman.x, hanuman.z);
+  const madhav = findLabel(/madhav/i); if (madhav) put(temple(0, 0, 0.8, saffron), madhav.x, madhav.z);
+  // Adi Shankar Vimana Mandapam: tall tiered south-Indian style tower in cream stone
+  const shankar = findLabel(/shankar|vimana/i);
+  if (shankar) {
+    const g = new THREE.Group(); let y = 0, w = 30;
+    g.add(rbox(36, 2, 36, creamStone, 0, 1, 0, 0.2)); y = 2;
+    for (let i = 0; i < 5; i++) { const h = i === 0 ? 10 : 6; g.add(rbox(w, h, w, creamStone, 0, y + h / 2, 0, 0.3)); for (let k = -1; k <= 1; k += 2) g.add(box(w * 0.9, 0.6, 0.6, goldMat, 0, y + h, k * w / 2)); y += h; w *= 0.76; }
+    const top = new THREE.Mesh(new THREE.SphereGeometry(w * 0.7, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2), goldMat); top.position.y = y; g.add(top);
+    g.add(cyl(0.2, 1.2, 3, goldMat, 0, y + w * 0.7 + 1.5, 0, 10)); put(g, shankar.x, shankar.z);
+  }
+  // Akshayavat: the giant old banyan tree
+  const akshay = findLabel(/akshay/i);
+  if (akshay) {
+    const g = new THREE.Group(); g.add(cyl(1.6, 2.4, 9, mats.trunk, 0, 4.5, 0, 10));
+    for (let i = 0; i < 9; i++) { const a = i / 9 * Math.PI * 2, c = new THREE.Mesh(crownGeo, std({ color: 0x3f6b2a, roughness: 0.9 })); c.scale.set(7, 4.5, 7); c.position.set(Math.cos(a) * 7, 11 + (i % 3), Math.sin(a) * 7); c.castShadow = true; g.add(c); if (i % 2 === 0) g.add(cyl(0.18, 0.25, 11, mats.trunk, Math.cos(a) * 9, 5.5, Math.sin(a) * 9, 6)); }
+    put(g, akshay.x, akshay.z);
+  }
+  // Triveni Sangam: wooden platforms on the water, saffron flags and big umbrellas on the sand
+  const sangamM = missions.length ? null : null;
+  let sx = null, sz = null; const sl = findLabel(/sangam/i); if (sl) { sx = sl.x; sz = sl.z; }
+  if (sx === null) { let big = null, ba = 0; for (const rs of world.sand) { const r = rs[0]; let a = 0, cx = 0, cz = 0; const nn = r.length / 2; for (let i = 0; i < r.length; i += 2) { cx += r[i]; cz += r[i + 1]; } for (let i = 0, k = nn - 1; i < nn; k = i++) a += r[k * 2] * r[i * 2 + 1] - r[i * 2] * r[k * 2 + 1]; if (Math.abs(a) > ba) { ba = Math.abs(a); big = { x: cx / nn, z: cz / nn }; } } if (big) { sx = big.x; sz = big.z; } }
+  if (sx !== null) {
+    sangamSpot = { x: sx, z: sz };
+    const umb = (x, z, col) => { const g = new THREE.Group(); g.add(cyl(0.06, 0.06, 3, mats.pole, 0, 1.5, 0, 6)); const c = new THREE.Mesh(new THREE.ConeGeometry(1.8, 0.8, 10, 1, true), std({ color: col, side: THREE.DoubleSide, roughness: 0.7 })); c.position.y = 3.1; c.castShadow = true; g.add(c); g.position.set(x, 0.05, z); return g; };
+    for (let i = 0; i < 70; i++) {
+      const a = Math.random() * Math.PI * 2, r = 20 + Math.random() * 260, x = sx + Math.cos(a) * r, z = sz + Math.sin(a) * r, sAt = solidAt(x, z);
+      if (sAt === 0 && Math.random() < 0.55) scene.add(Math.random() < 0.5 ? flag(x, z, 6 + Math.random() * 6) : umb(x, z, [0xff8c1a, 0xffd23f, 0xd62828, 0x2a9d8f][i % 4]));
+      else if (sAt === 2 && Math.random() < 0.35) { const pl = rbox(8, 0.5, 4, std({ color: 0x8b5a2b, roughness: 0.9 }), x, 0.35, z, 0.05); pl.rotation.y = Math.random() * 3; scene.add(pl); }
+    }
+  }
+  // Cable-stayed towers on the longest road bridge (New Yamuna Bridge style)
+  let lb = null; for (const b of bridges) if (!lb || b.L > lb.L) lb = b;
+  if (lb && lb.L > 500) {
+    const p = lb.pts, cum = [0]; for (let k = 0; k + 3 < p.length; k += 2) cum.push(cum[cum.length - 1] + Math.hypot(p[k + 2] - p[k], p[k + 3] - p[k + 1]));
+    const at = (d) => { let k = 0; while (k < cum.length - 2 && cum[k + 1] < d) k++; const t = (d - cum[k]) / ((cum[k + 1] - cum[k]) || 1); return { x: p[k * 2] + (p[k * 2 + 2] - p[k * 2]) * t, z: p[k * 2 + 1] + (p[k * 2 + 3] - p[k * 2 + 1]) * t, y: lb.ys[k] + (lb.ys[k + 1] - lb.ys[k]) * t, a: Math.atan2(p[k * 2 + 2] - p[k * 2], p[k * 2 + 3] - p[k * 2 + 1]) }; };
+    const cables = [];
+    for (const f of [0.36, 0.64]) {
+      const c = at(lb.L * f), H = 62, nx = Math.cos(c.a), nz = -Math.sin(c.a);
+      for (const side of [-1, 1]) { const leg = rbox(2.2, H, 2.2, creamStone, c.x + nx * (lb.w / 2 + 1.5) * side, c.y + H / 2 - 6, c.z + nz * (lb.w / 2 + 1.5) * side, 0.3); leg.rotation.y = c.a; leg.rotation.z = -side * 0.06; scene.add(leg); }
+      scene.add(rbox(lb.w + 6, 2.5, 2.5, creamStone, c.x, c.y + H - 10, c.z, 0.3));
+      for (let k = 1; k <= 12; k++) for (const dir of [-1, 1]) { const q = at(Math.min(lb.L, Math.max(0, lb.L * f + dir * k * 14))); for (const side of [-1, 1]) cables.push(c.x + nx * (lb.w / 2 + 1.5) * side, c.y + H - 10 - k * 1.2, c.z + nz * (lb.w / 2 + 1.5) * side, q.x + nx * (lb.w / 2) * side, q.y + 1, q.z + nz * (lb.w / 2) * side); }
+    }
+    const cg = new THREE.BufferGeometry(); cg.setAttribute('position', new THREE.Float32BufferAttribute(cables, 3));
+    scene.add(new THREE.LineSegments(cg, new THREE.LineBasicMaterial({ color: 0xe8e8e8 })));
+  }
+}
+var sangamSpot = null;
 // ---- chunks: the city is built in 200 m squares around the player and thrown away when far
 const chunks = new Map();
 const chunkKey = (i, j) => i + ',' + j;
@@ -764,8 +896,8 @@ const carShellGeo = (() => {
   paint(new THREE.BoxGeometry(1.8, 0.62, 4.2).translate(0, 0.62, 0), [1, 1, 1]);
   paint(new THREE.BoxGeometry(1.62, 0.52, 2.1).translate(0, 1.18, -0.25), [0.1, 0.12, 0.15]);
   paint(new THREE.BoxGeometry(1.64, 0.06, 2.0).translate(0, 1.46, -0.25), [1, 1, 1]);
-  paint(new THREE.BoxGeometry(1.5, 0.12, 0.04).translate(0, 0.78, 2.11), [1.6, 1.6, 1.5]);   // headlights
-  paint(new THREE.BoxGeometry(1.5, 0.1, 0.04).translate(0, 0.8, -2.11), [1.2, 0.1, 0.1]);   // tail lights
+  paint(new THREE.BoxGeometry(1.5, 0.12, 0.04).translate(0, 0.78, 2.11), [0.95, 0.95, 0.9]);  // headlights
+  paint(new THREE.BoxGeometry(1.5, 0.1, 0.04).translate(0, 0.8, -2.11), [0.8, 0.06, 0.06]);  // tail lights
   for (const sx of [-0.82, 0.82]) for (const sz of [-1.35, 1.35]) paint(new THREE.CylinderGeometry(0.33, 0.33, 0.24, 10).rotateZ(Math.PI / 2).translate(sx, 0.33, sz), [0.05, 0.05, 0.05]);
   return mergeGeometries(parts);
 })();
@@ -1175,7 +1307,8 @@ function summonCar(type) {
   if (myCar) { scene.remove(myCar.g); }
   const { g, wheels } = buildCar(type);
   const fwdx = Math.sin(player.yaw + Math.PI), fwdz = Math.cos(player.yaw + Math.PI);
-  const spot = findFreeSpot(player.x + fwdx * 4, player.z + fwdz * 4, 0);
+  let spot = findFreeSpot(player.x + fwdx * 4, player.z + fwdz * 4, 0);
+  for (let tries = 0; tries < 12 && traffic && traffic.list.some(o => o.road && Math.hypot(o.x - spot.x, o.z - spot.z) < 7); tries++) spot = findFreeSpot(spot.x + 6, spot.z + 6, 0);
   g.rotation.order = 'YXZ';
   myCar = { type, def: CAR_DEFS[type], g, wheels, x: spot.x, z: spot.z, yaw: player.yaw + Math.PI / 2, speed: 0, steer: 0, roll: 0, y: heightAt(spot.x, spot.z), pitch: 0 };
   scene.add(g); placeCar(myCar, 0);
@@ -1340,6 +1473,11 @@ function buildMissions() {
   // cross the longest bridge
   let lb = null; for (const b of bridges) if (!lb || b.L > lb.L) lb = b;
   if (lb) { const p = lb.pts, n = p.length; add('bridge', 'Cross the big bridge', 'Drive over the longest bridge in town to the other side.', p[n - 2], p[n - 1]); }
+  const AREAS = [[/civil lines/i, 'civil', 'Civil Lines', 'Drive to Civil Lines, the busy heart of the city.'], [/naini/i, 'naini', 'Naini', 'Cross the Yamuna and reach Naini.'],
+    [/arail/i, 'arail', 'Arail', 'Go to Arail on the south bank, facing the Sangam.'], [/jhusi|jhunsi/i, 'jhusi', 'Jhusi', 'Cross the Ganga to Jhusi on the east bank.'],
+    [/ada\b|adda/i, 'ada', 'Ada Mod', 'Find Ada Mod.'], [/hanuman/i, 'hanuman', 'Bade Hanuman Mandir', 'Visit the famous Hanuman temple near the Sangam.'],
+    [/shankar|vimana/i, 'shankar', 'Shankar Vimana Mandapam', 'See the tall golden-topped temple tower.'], [/fort|qila|kila/i, 'fort', 'Prayagraj Fort', 'Reach the old red sandstone fort by the river.']];
+  for (const [re, id, title, desc] of AREAS) { const l = world.labels.find(x => re.test(x.n)); if (l) add(id, title, desc, l.x, l.z); }
   missions = list;
 }
 function startMission(m) {
@@ -1412,7 +1550,7 @@ function renderCamera() {
   for (const p of photos.slice().reverse()) { const c = document.createElement('div'); c.className = 'card'; c.innerHTML = `<img src="${p}" style="width:100%;border-radius:10px"><br><a href="${p}" download="prayagraj.jpg" style="color:#f5b041">Save photo</a>`; el.appendChild(c); }
 }
 // map app: the whole city pre-drawn once, then cropped around you
-let mapCanvas = null; const MAPS = LITE ? 0.25 : 0.4;
+let mapCanvas = null;
 function drawFullMap() {
   mapCanvas = document.createElement('canvas'); mapCanvas.width = Math.ceil((B.x1 - B.x0) * MAPS); mapCanvas.height = Math.ceil((B.z1 - B.z0) * MAPS);
   const x = mapCanvas.getContext('2d'), tx = v => (v - B.x0) * MAPS, tz = v => (v - B.z0) * MAPS;
@@ -1605,6 +1743,7 @@ function placeOnRoad(o, near, speedMin, speedMax, people) {
   for (let tries = 0; tries < 40; tries++) {
     const lr = lifeRoads[Math.floor(Math.random() * lifeRoads.length)], p = lr.r.pts, k = Math.floor(Math.random() * (p.length / 2)) * 2;
     if (Math.hypot(p[k] - near.x, p[k + 1] - near.z) > (people ? 260 : 560)) continue;
+    if (started && Math.hypot(p[k] - player.x, p[k + 1] - player.z) < (people ? 30 : 60)) continue;   // never appear right next to you
     if (!people && lr.r.cls > 3) continue;
     Object.assign(o, { road: lr, s: Math.random() * lr.L, dir: Math.random() < 0.5 ? 1 : -1, v: speedMin + Math.random() * (speedMax - speedMin), side: Math.random() < 0.5 ? 1 : -1, ph: Math.random() * 6.28 });
     return true;
@@ -1675,6 +1814,7 @@ function frame() {
     }
   }
   updateChunks(dt);
+  if (satStream && (satT -= dt) <= 0) { satT = 0.5; satStream(); }
   const fx = Math.round(focus.x / 4) * 4, fz = Math.round(focus.z / 4) * 4;
   sun.position.set(fx + sunDir.x * 300, Math.max(30, sunDir.y * 300), fz + sunDir.z * 300); sun.target.position.set(fx, 0, fz);
   waterNormal.offset.set(t * 0.004, t * 0.006);
