@@ -221,7 +221,7 @@ const MAXANISO = Math.min(16, renderer.capabilities.getMaxAnisotropy());
 // sky, sun, haze
 const sky = new Sky(); sky.scale.setScalar(20000); scene.add(sky);
 const skyU = sky.material.uniforms;
-skyU.turbidity.value = 2.2; skyU.rayleigh.value = 0.9; skyU.mieCoefficient.value = 0.0035; skyU.mieDirectionalG.value = 0.85;
+skyU.turbidity.value = 1.6; skyU.rayleigh.value = 2.2; skyU.mieCoefficient.value = 0.002; skyU.mieDirectionalG.value = 0.8;
 const sun = new THREE.DirectionalLight(0xfff1dc, 3.0);
 sun.castShadow = !LITE;
 const SH = isTouch ? 2048 : 4096, SR = isTouch ? 90 : 120;
@@ -440,6 +440,7 @@ const mats = {
   wood: std({ map: grassTex, color: 0x9cb08a, roughness: 0.95 }),
   farm: std({ map: groundTex, color: 0xd8d090, roughness: 0.95 }),
   sand: std({ map: sandTex, roughness: 0.9 }),
+  waterSat: std({ color: 0x2c4f4c, roughness: 0.05, metalness: 0.2, normalMap: waterNormal, normalScale: new THREE.Vector2(0.45, 0.45), transparent: true, opacity: 0.42, depthWrite: false }),
   water: std({ color: 0x4d6f6b, roughness: 0.06, metalness: 0.15, normalMap: waterNormal, normalScale: new THREE.Vector2(0.35, 0.35) }),
   roadMajor: std({ normalMap: grainNormal, map: asphaltTex(true), roughness: 0.85, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 }),
   roadMinor: std({ normalMap: grainNormal, map: asphaltTex(false), roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }),
@@ -536,7 +537,7 @@ function setProgress(p, text) { loadbar.style.width = p + '%'; if (text) loadtex
 var SAT_TOKEN = null; const GEO = { lat0: 0, lon0: 0, kx: 1, kz: 110540 };
 // ---- real satellite photos on the ground (Mapbox). Web-mercator tiles mapped onto our local metres.
 function buildSatellite() {
-  const Z = 16, n = 2 ** Z, PI = Math.PI;
+  const Z = 15, n = 2 ** Z, PI = Math.PI;              // 1024-px photos at zoom 15 ≈ 1 m per pixel, about 30 photos per visit
   const lon2x = lon => (lon + 180) / 360 * n, lat2y = lat => (1 - Math.log(Math.tan(lat * PI / 180) + 1 / Math.cos(lat * PI / 180)) / PI) / 2 * n;
   const x2lon = x => x / n * 360 - 180, y2lat = y => { const m = PI - 2 * PI * y / n; return 180 / PI * Math.atan(0.5 * (Math.exp(m) - Math.exp(-m))); };
   const toX = lon => (lon - GEO.lon0) * GEO.kx, toZ = lat => -(lat - GEO.lat0) * GEO.kz;
@@ -553,9 +554,9 @@ function buildSatellite() {
   const geo = new THREE.PlaneGeometry(1, 1); geo.rotateX(-Math.PI / 2);
   let i = 0, active = 0, failed = 0;
   const next = () => {
-    while (active < 6 && i < tiles.length) {
+    while (active < 4 && i < tiles.length) {
       const t = tiles[i++]; active++;
-      loader.load(`https://api.mapbox.com/v4/mapbox.satellite/${Z}/${t.tx}/${t.ty}@2x.jpg90?access_token=${SAT_TOKEN}`, (tex) => {
+      loader.load(`https://api.mapbox.com/styles/v1/mapbox/satellite-v9/tiles/512/${Z}/${t.tx}/${t.ty}@2x?access_token=${SAT_TOKEN}`, (tex) => {
         tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = MAXANISO; tex.generateMipmaps = true;
         const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: tex, roughness: 0.96 }));
         m.scale.set(t.x1 - t.x0, 1, t.z1 - t.z0); m.position.set((t.x0 + t.x1) / 2, 0.012, (t.z0 + t.z1) / 2); m.receiveShadow = true;
@@ -668,7 +669,7 @@ function buildGlobal() {
   ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
   if (SAT_TOKEN) buildSatellite();                                 // real photo ground replaces the drawn parks and sand
   else for (const g of world.green) scene.add(polyMesh([g.pts], 0.02, g.k === 4 ? mats.wood : g.k === 5 ? mats.farm : mats.grass));
-  if (!LITE) {                                   // one reflective river surface (real sky + city reflections)
+  if (!LITE && !SAT_TOKEN) {                     // one reflective river surface (real sky + city reflections)
     const geos = world.water.map(rs => polyMesh(rs, 0, mats.water).geometry);
     const merged = mergeGeometries(geos); geos.forEach(g => g.dispose());
     const normals = new THREE.TextureLoader().load('https://cdn.jsdelivr.net/npm/three@0.169.0/examples/textures/waternormals.jpg', t => { t.wrapS = t.wrapT = THREE.RepeatWrapping; });
@@ -678,7 +679,7 @@ function buildGlobal() {
       sunColor: 0xfff1d6, waterColor: 0x0b3a3c, distortionScale: 3.6, fog: true, alpha: 1 });
     waterFX.material.uniforms.size.value = 1.6;
     waterFX.rotation.x = -Math.PI / 2; waterFX.position.y = 0.03; scene.add(waterFX);
-  } else for (const rs of world.water) { const w = polyMesh(rs, 0.03, mats.water); w.receiveShadow = false; scene.add(w); }
+  } else for (const rs of world.water) { const w = polyMesh(rs, 0.03, SAT_TOKEN ? mats.waterSat : mats.water); w.receiveShadow = false; w.renderOrder = 2; scene.add(w); }   // with satellite: see-through shimmer over the real river
   if (!SAT_TOKEN) for (const rs of world.sand) scene.add(polyMesh(rs, 0.04, mats.sand));
   // railway lines
   const ro = { pos: [], uv: [], idx: [] }; for (const r of world.rail) ribbon(r, 3.4, 0.09, ro, 3.4);
