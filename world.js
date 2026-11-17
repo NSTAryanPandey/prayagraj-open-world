@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 
-const AREA = { id: 'prayagraj-sangam-v1', name: 'Prayagraj', south: 25.408, west: 81.855, north: 25.445, east: 81.905 };
+const AREA = { id: 'prayagraj-city-v2', name: 'Prayagraj', south: 25.372, west: 81.815, north: 25.468, east: 81.940 };
 AREA.lat0 = (AREA.south + AREA.north) / 2;
 AREA.lon0 = (AREA.west + AREA.east) / 2;
 const MIRRORS = [
@@ -18,12 +18,14 @@ const CACHE_FILE = path.join(__dirname, 'data', `${AREA.id}.json.gz`);
 
 function overpassQuery(a) {
   const bb = `${a.south},${a.west},${a.north},${a.east}`;
-  return `[out:json][timeout:120];(
+  return `[out:json][timeout:240][maxsize:1073741824];(
     way["highway"](${bb}); way["building"](${bb});
     way["natural"~"^(water|sand|beach|wood|scrub)$"](${bb}); relation["natural"~"^(water|sand)$"](${bb});
     way["waterway"~"^(river|riverbank|canal)$"](${bb}); way["railway"="rail"](${bb});
     way["leisure"~"^(park|garden|pitch|stadium)$"](${bb});
     way["landuse"~"^(grass|forest|recreation_ground|meadow|orchard|village_green|cemetery|farmland|reservoir|basin)$"](${bb});
+    node["place"~"^(suburb|neighbourhood|quarter|town|village|locality)$"](${bb});
+    nwr["historic"]["name"](${bb}); nwr["amenity"="place_of_worship"]["name"](${bb}); nwr["tourism"]["name"](${bb});
   );out geom;`;
 }
 
@@ -69,10 +71,15 @@ function processOSM(j, lat0, lon0) {
     residential: [3, 6], living_street: [3, 5], service: [4, 4], pedestrian: [5, 5], footway: [5, 2.2], path: [6, 2], track: [6, 3] };
   const GREEN = { park: 1, garden: 1, village_green: 1, recreation_ground: 1, grass: 2, meadow: 2, pitch: 2, stadium: 2, cemetery: 3,
     wood: 4, forest: 4, orchard: 4, scrub: 4, farmland: 5 };
-  const out = { v: 1, lat0, lon0, roads: [], buildings: [], water: [], sand: [], green: [], rail: [], labels: [] };
+  const out = { v: 2, lat0, lon0, roads: [], buildings: [], water: [], sand: [], green: [], rail: [], labels: [], forts: [] };
   let hash = 0;
   for (const e of j.elements || []) {
     const t = e.tags || {};
+    if (e.type === 'node' && t.name && Number.isFinite(e.lat)) {        // area names and famous places
+      out.labels.push([t.name, ...P([{ lat: e.lat, lon: e.lon }]), t.place || t.historic || t.amenity || t.tourism || 'place']);
+      continue;
+    }
+    if (e.type === 'way' && e.geometry && t.historic === 'fort' && closed(e.geometry)) out.forts.push(P(ring(e.geometry)));
     if (e.type === 'way' && e.geometry) {
       const g = e.geometry, hw = t.highway && t.highway.replace(/_link$/, '');
       if (hw && ROAD[hw]) {
@@ -91,7 +98,7 @@ function processOSM(j, lat0, lon0) {
       } else if (closed(g) && (t.natural === 'sand' || t.natural === 'beach')) out.sand.push([P(ring(g))]);
       else if (closed(g) && (GREEN[t.leisure] || GREEN[t.landuse] || GREEN[t.natural])) out.green.push([GREEN[t.leisure] || GREEN[t.landuse] || GREEN[t.natural], P(ring(g))]);
       else if (t.waterway === 'river' && t.name) out.labels.push([t.name, ...P([g[Math.floor(g.length / 2)]]), 'river']);
-      if (t.name && closed(g) && (t.leisure || t.natural === 'water' || t.amenity || t.historic || t.tourism || t.landuse === 'religious'))
+      if (t.name && closed(g) && (t.leisure || t.natural === 'water' || t.amenity === 'place_of_worship' || t.historic || t.tourism || t.landuse === 'religious'))
         out.labels.push([t.name, ...centroid(g), t.leisure || t.historic || t.tourism || t.amenity || t.natural || 'place']);
     } else if (e.type === 'relation' && e.members && (t.natural === 'water' || t.natural === 'sand')) {
       const outers = stitch(e.members.filter(m => m.role !== 'inner').map(m => m.geometry));
@@ -111,7 +118,7 @@ async function fetchOverpass() {
   let lastErr;
   for (const url of MIRRORS) {
     try {
-      const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 150000);
+      const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 280000);
       const res = await fetch(url, { method: 'POST', body, signal: ctl.signal,
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'ArchVizStudio-OpenWorld/1.0 (student game)' } });
       clearTimeout(timer);
